@@ -1,133 +1,153 @@
-import pandas as pd
 import streamlit as st
-import pdfplumber
-from gtts import gTTS
 import os
 import tempfile
-from streamlit_option_menu import option_menu
+import pytesseract
+from pdf2image import convert_from_path
+from PIL import Image
 
-# Create the Streamlit app
-st.set_page_config(page_title="PDF to Audio Converter", layout="wide")
+from gtts import gTTS
+from pdfminer.high_level import extract_text
+from docx import Document
+from bs4 import BeautifulSoup
+from ebooklib import epub
+from striprtf.striprtf import rtf_to_text
+from odf.opendocument import load
+from odf.text import P
 
-# Navigation bar
-with st.sidebar:
-    selected = option_menu("Main Menu", ["Home", "About", "Upload File"],
-                           icons=["house", "info-circle", "cloud-upload"],
-                           menu_icon="cast", default_index=0)
+OCR_LANGUAGE_MAP = {
+    "en": "eng",
+    "hi": "hin",
+    "bn": "ben",
+    "ta": "tam",
+    "te": "tel",
+    "fr": "fra",
+    "es": "spa",
+    "de": "deu"
+}
 
-# Home section
-if selected == "Home":
-    st.title('Welcome to PDF to Audio Converter')
-    st.write("Use the navigation bar to switch between sections.")
+def ocr_pdf(pdf_path, lang_code):
+    try:
+        images = convert_from_path(pdf_path)
+        text = []
 
-# About section
-elif selected == "About":
-    st.title('About')
-    st.write('''Experience the future of communication with our cutting-edge text-to-speech technology. 
-    Transform your written words into captivating audio experiences that resonate with your audience.
+        for img in images:
+            page_text = pytesseract.image_to_string(img, lang=lang_code)
+            text.append(page_text)
 
-    Instant Transformation: Watch as your text is seamlessly converted into natural-sounding speech, delivered with precision and clarity.
-    Unmatched Versatility: From engaging presentations to accessible content, our TTS solution adapts to your every need.
-    Lifelike Voices: Immerse yourself in a world of authentic voices that bring your message to life.
-    Global Reach: Break language barriers and connect with audiences worldwide through our diverse range of accents and languages.
-    Whether you're aiming to enhance accessibility, boost engagement, or simply streamline your workflow, our text-to-speech technology is your ultimate companion.''')
+        return "\n".join(text)
 
-# Upload File section
-elif selected == "Upload File":
-    st.title('Upload PDF File')
-    
-    # PDF extraction using pdfplumber
-    def extract_text_from_pdf(pdf_path):
-        """
-        Extract text from a PDF file.
+    except Exception as e:
+        st.error(f"OCR Error: {e}")
+        return None
 
-        Args:
-            pdf_path (str): Path to the PDF file.
 
-        Returns:
-            str: Extracted text.
-        """
-        try:
-            text = ""
-            with pdfplumber.open(pdf_path) as pdf:
-                for page in pdf.pages:
-                    page_text = page.extract_text()
-                    if page_text:
-                        text += page_text
-            return text
-        except Exception as e:
-            st.error(f"Error extracting text from PDF: {e}")
+def extract_text_from_file(uploaded_file):
+    try:
+        name = uploaded_file.name
+        ext = os.path.splitext(name)[1].lower()
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+            tmp.write(uploaded_file.getbuffer())
+            temp_path = tmp.name
+
+        if ext == ".pdf":
+            text = extract_text(temp_path)
+
+            if text and text.strip():
+                return text
+            else:
+                st.warning("Scanned PDF detected. Running OCR...")
+                ocr_lang = OCR_LANGUAGE_MAP.get(selected_language, "eng")
+                return ocr_pdf(temp_path, ocr_lang)
+
+        elif ext in [".txt", ".md"]:
+            return uploaded_file.getvalue().decode("utf-8")
+
+        elif ext == ".docx":
+            doc = Document(temp_path)
+            return "\n".join(p.text for p in doc.paragraphs)
+
+        elif ext in [".html", ".htm"]:
+            soup = BeautifulSoup(uploaded_file.getvalue(), "html.parser")
+            return soup.get_text(separator="\n")
+
+        elif ext == ".epub":
+            book = epub.read_epub(temp_path)
+            text = []
+            for item in book.get_items():
+                if item.get_type() == epub.ITEM_DOCUMENT:
+                    soup = BeautifulSoup(item.get_content(), "html.parser")
+                    text.append(soup.get_text())
+            return "\n".join(text)
+
+        elif ext == ".rtf":
+            return rtf_to_text(uploaded_file.getvalue().decode("utf-8", errors="ignore"))
+
+        elif ext == ".odt":
+            doc = load(temp_path)
+            paragraphs = doc.getElementsByType(P)
+            return "\n".join(
+                p.firstChild.data if p.firstChild else "" for p in paragraphs
+            )
+
+        else:
+            st.error("Unsupported file format")
             return None
 
-    # Extracted text save to CSV
-    def save_text_to_csv(text, csv_path):
-        """
-        Save text to a CSV file.
+    except Exception as e:
+        st.error(f"Error extracting text: {e}")
+        return None
 
-        Args:
-            text (str): Text to save.
-            csv_path (str): Path to the CSV file.
-        """
-        try:
-            df = pd.DataFrame({"Text": [text]})
-            df.to_csv(csv_path, index=False)
-        except Exception as e:
-            st.error(f"Error saving text to CSV: {e}")
 
-    # Convert text to speech
-    def text_to_speech(text, audio_path):
-        """
-        Convert text to speech and save as an audio file.
+def text_to_speech(text, language="en"):
+    tts = gTTS(text=text, lang=language, slow=False)
+    audio_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
+    tts.save(audio_file.name)
+    return audio_file.name
 
-        Args:
-            text (str): Text to convert.
-            audio_path (str): Path to the audio file.
-        """
-        try:
-            tts = gTTS(text)
-            tts.save(audio_path)
-        except Exception as e:
-            st.error(f"Error converting text to speech: {e}")
 
-    # File uploader section
-    uploaded_file = st.file_uploader("Upload a PDF file", type=["pdf"])
+st.set_page_config(page_title="Universal Document to Speech", layout="centered")
 
-    if uploaded_file is not None:
-        # Save the uploaded file to a temporary file
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_file:
-            temp_file.write(uploaded_file.getvalue())
-            temp_file_path = temp_file.name
+st.title("Universal Document to Speech Converter")
+st.write("Upload any text-based document and convert it into spoken audio.")
 
-        # Extract text from PDF
-        extract_text = extract_text_from_pdf(temp_file_path)
+uploaded_file = st.file_uploader(
+    "Upload a document",
+    type=["pdf", "txt", "md", "docx", "html", "htm", "epub", "rtf", "odt"]
+)
 
-        if extract_text:
-            # Display extracted text
-            st.header('Extracted Text')
-            st.text_area('Extracted Text from PDF', extract_text, height=300)
+language = st.selectbox(
+    "Select language",
+    ["en", "hi", "bn", "ta", "te", "fr", "es", "de"]
+)
+selected_language = language
 
-            # Save extracted text to CSV
-            csv_file_path = "extracted_text.csv"
-            save_text_to_csv(extract_text, csv_file_path)
+if uploaded_file:
+    with st.spinner("Extracting text..."):
+        text = extract_text_from_file(uploaded_file)
 
-            # Convert text to speech
-            audio_file_path = "text_to_speech.mp3"
-            text_to_speech(extract_text, audio_file_path)
+    if text and text.strip():
+        st.success("Text extracted successfully")
 
-            # Read the audio data
-            with open(audio_file_path, 'rb') as audio_file:
-                audio_data = audio_file.read()
+        with st.expander("Preview extracted text"):
+            st.text(text[:3000])
 
-            # Display the audio file
-            st.header('Audio File')
-            st.audio(audio_data, format='audio/mp3')
+        if st.button("Convert to Audio"):
+            with st.spinner("Generating audio..."):
+                audio_path = text_to_speech(text, language)
 
-            # Create a downloadable audio file
-            st.header('Downloadable Audio File')
-            st.download_button('Download Audio File', audio_data, file_name='text_to_speech.mp3')
+            st.success("Audio generated")
 
-            # Clean up temporary files
-            os.remove(temp_file_path)
-            os.remove(audio_file_path)
-        else:
-            st.error("Failed to extract text from the PDF file. Please check the file and try again.")
+            st.audio(audio_path)
+
+            with open(audio_path, "rb") as f:
+                st.download_button(
+                    "⬇ Download MP3",
+                    f,
+                    file_name="output.mp3",
+                    mime="audio/mpeg"
+                )
+    else:
+        st.error(
+            "No readable text found in this document."
+        )
