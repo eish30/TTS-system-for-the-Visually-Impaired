@@ -1,0 +1,11 @@
+streamlit
+pytesseract
+pdf2image
+Pillow
+pdfminer.six
+python-docx
+beautifulsoup4
+ebooklib
+striprtf
+odfpy
+gTTS
